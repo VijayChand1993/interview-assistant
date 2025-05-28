@@ -10,6 +10,8 @@ import requests
 import tempfile
 import os
 import json
+from tkhtmlview import HTMLScrolledText
+import markdown
 
 SAMPLERATE = 44100
 
@@ -58,10 +60,11 @@ class VoiceApp:
         )
         self.stop_btn.grid(row=0, column=1, padx=10)
 
-        # Text area
-        self.text_area = ScrolledText(root, width=70, height=20, font=("Courier", 20), wrap=tk.WORD)
+        # Text area (Markdown/HTML rendering)
+        self.text_area = HTMLScrolledText(root, width=70, height=20, font=("Courier", 20), html=True)
         self.text_area.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
-        self.text_area.insert(tk.END, "[INFO] Ready to record...\n")
+        self.html_buffer = "<p><b>[INFO]</b> Ready to record...</p>"
+        self.text_area.set_html(self.html_buffer)
 
         # Query entry and Go button at the bottom
         entry_frame = tk.Frame(root, height=60)  # Double the height (default is ~30)
@@ -81,9 +84,12 @@ class VoiceApp:
         # Check if user is at the bottom before inserting
         last_visible = self.text_area.yview()[1]
         at_bottom = last_visible >= 0.999  # yview returns (top, bottom) as fractions
-        self.text_area.insert(tk.END, message)
+        # Render user/info/error messages as markdown for consistency
+        html_message = markdown.markdown(message, extensions=['fenced_code', 'codehilite'])
+        self.html_buffer += html_message
+        self.text_area.set_html(self.html_buffer)
         if at_bottom:
-            self.text_area.see(tk.END)
+            self.text_area.see("end")
 
     def start_recording(self):
         if self.recording:
@@ -164,13 +170,14 @@ class VoiceApp:
                             chunk = data.get("response", "")
                             if chunk:
                                 buffer += chunk
-                                self.root.after(0, self.update_text_area, chunk)
-                        except Exception as e:
+                                # Only update the UI every 10 characters or on newlines to reduce flicker
+                                if len(buffer) % 10 == 0 or chunk.endswith("\n"):
+                                    self.root.after(0, self.update_llama_response, buffer)
+                        except Exception:
                             continue
-                self.root.after(0, self.update_text_area, "\n\n")
+                self.root.after(0, self.finalize_llama_response, buffer)
             except Exception as e:
                 self.root.after(0, self.update_text_area, f"[ERROR] LLaMA request failed: {e}\n")
-
         except Exception as e:
             self.root.after(0, self.update_text_area, f"[ERROR] Audio processing failed: {e}\n")
 
@@ -188,7 +195,6 @@ class VoiceApp:
 
     def send_query_to_ollama(self, query):
         try:
-            # Use streaming mode
             response = requests.post(
                 "http://localhost:11434/api/generate",
                 json={"model": "llama3.2", "prompt": query, "stream": True},
@@ -204,12 +210,33 @@ class VoiceApp:
                         chunk = data.get("response", "")
                         if chunk:
                             buffer += chunk
-                            self.root.after(0, self.update_text_area, chunk)
-                    except Exception as e:
+                            # Only update the UI every 10 characters or on newlines to reduce flicker
+                            if len(buffer) % 10 == 0 or chunk.endswith("\n"):
+                                self.root.after(0, self.update_llama_response, buffer)
+                    except Exception:
                         continue
-            self.root.after(0, self.update_text_area, "\n\n")
+            self.root.after(0, self.finalize_llama_response, buffer)
         except Exception as e:
             self.root.after(0, self.update_text_area, f"[ERROR] LLaMA request failed: {e}\n")
+
+    def update_llama_response(self, buffer):
+        import re
+        # Remove only the last LLaMA response block, keep previous conversation
+        html_buffer = self.html_buffer
+        # Remove only the last <div id='llama-response'>...</div> at the end
+        html_buffer = re.sub(r"(<div id='llama-response'>.*?</div>)(?![\s\S]*<div id='llama-response'>)", "", html_buffer, flags=re.DOTALL)
+        html = f"<div id='llama-response'>{markdown.markdown(buffer, extensions=['fenced_code', 'codehilite'])}</div>"
+        self.text_area.set_html(html_buffer + html)
+        self.text_area.see("end")
+
+    def finalize_llama_response(self, buffer):
+        import re
+        # Remove only the last <div id='llama-response'>...</div> at the end
+        self.html_buffer = re.sub(r"(<div id='llama-response'>.*?</div>)(?![\s\S]*<div id='llama-response'>)", "", self.html_buffer, flags=re.DOTALL)
+        html = f"<div id='llama-response'>{markdown.markdown(buffer, extensions=['fenced_code', 'codehilite'])}</div>"
+        self.html_buffer += html + "<br><br>"
+        self.text_area.set_html(self.html_buffer)
+        self.text_area.see("end")
 
 def main():
     root = tk.Tk()

@@ -9,6 +9,7 @@ import whisper
 import requests
 import tempfile
 import os
+import json
 
 SAMPLERATE = 44100
 
@@ -16,15 +17,14 @@ class VoiceApp:
     def __init__(self, root):
         self.root = root
         self.root.title("🎙️ Voice Assistant with Whisper + LLaMA 3.2")
-        self.root.geometry("600x500")
+        # self.root.geometry("600x800")
         self.root.resizable(True, True)
-        self.root.resizable(False, False)
 
         self.recording = False
         self.frames = []
 
         # Set font
-        self.custom_font = tkfont.Font(family="Helvetica", size=10)
+        self.custom_font = tkfont.Font(family="Helvetica", size=20)
         self.heading_font = tkfont.Font(family="Helvetica", size=14, weight="bold")
 
         # Title
@@ -63,12 +63,27 @@ class VoiceApp:
         self.text_area.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
         self.text_area.insert(tk.END, "[INFO] Ready to record...\n")
 
+        # Query entry and Go button at the bottom
+        entry_frame = tk.Frame(root, height=60)  # Double the height (default is ~30)
+        entry_frame.pack_propagate(False)  # Prevent frame from shrinking to fit contents
+        entry_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        self.query_var = tk.StringVar()
+        self.query_entry = tk.Entry(entry_frame, textvariable=self.query_var, font=self.custom_font, width=60)
+        self.query_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10), ipady=10)  # Double the height with ipady
+        self.query_entry.bind('<Return>', self.on_query_enter)
+        self.go_btn = tk.Button(entry_frame, text="➡️", command=self.on_query_submit, font=self.custom_font, width=4, bg="#2196F3", fg="white")
+        self.go_btn.pack(side=tk.LEFT)
+
         # Load whisper model once
-        self.model = whisper.load_model("base")
+        self.model = whisper.load_model("small")
 
     def update_text_area(self, message):
+        # Check if user is at the bottom before inserting
+        last_visible = self.text_area.yview()[1]
+        at_bottom = last_visible >= 0.999  # yview returns (top, bottom) as fractions
         self.text_area.insert(tk.END, message)
-        self.text_area.see(tk.END)
+        if at_bottom:
+            self.text_area.see(tk.END)
 
     def start_recording(self):
         if self.recording:
@@ -136,18 +151,65 @@ class VoiceApp:
             try:
                 response = requests.post(
                     "http://localhost:11434/api/generate",
-                    json={"model": "llama3.2", "prompt": text, "stream": False},
-                    timeout=30
+                    json={"model": "llama3.2", "prompt": text, "stream": True},
+                    stream=True,
+                    timeout=60
                 )
                 response.raise_for_status()
-                llama_response = response.json().get("response", "[No response]")
+                buffer = ""
+                for line in response.iter_lines(decode_unicode=True):
+                    if line:
+                        try:
+                            data = json.loads(line)
+                            chunk = data.get("response", "")
+                            if chunk:
+                                buffer += chunk
+                                self.root.after(0, self.update_text_area, chunk)
+                        except Exception as e:
+                            continue
+                self.root.after(0, self.update_text_area, "\n\n")
             except Exception as e:
-                llama_response = f"[ERROR] LLaMA request failed: {e}"
-
-            self.root.after(0, self.update_text_area, f"[LLAMA 3.2]: {llama_response}\n\n")
+                self.root.after(0, self.update_text_area, f"[ERROR] LLaMA request failed: {e}\n")
 
         except Exception as e:
             self.root.after(0, self.update_text_area, f"[ERROR] Audio processing failed: {e}\n")
+
+    def on_query_enter(self, event=None):
+        self.on_query_submit()
+
+    def on_query_submit(self):
+        query = self.query_var.get().strip()
+        if not query:
+            return
+        self.query_var.set("")
+        self.update_text_area(f"[USER]: {query}\n")
+        self.update_text_area("[INFO] Sending to LLaMA 3.2...\n")
+        threading.Thread(target=self.send_query_to_ollama, args=(query,), daemon=True).start()
+
+    def send_query_to_ollama(self, query):
+        try:
+            # Use streaming mode
+            response = requests.post(
+                "http://localhost:11434/api/generate",
+                json={"model": "llama3.2", "prompt": query, "stream": True},
+                stream=True,
+                timeout=60
+            )
+            response.raise_for_status()
+            buffer = ""
+            for line in response.iter_lines(decode_unicode=True):
+                if line:
+                    try:
+                        data = json.loads(line)
+                        chunk = data.get("response", "")
+                        if chunk:
+                            buffer += chunk
+                            self.root.after(0, self.update_text_area, chunk)
+                    except Exception as e:
+                        continue
+            self.root.after(0, self.update_text_area, "\n\n")
+        except Exception as e:
+            self.root.after(0, self.update_text_area, f"[ERROR] LLaMA request failed: {e}\n")
 
 def main():
     root = tk.Tk()

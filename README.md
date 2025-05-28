@@ -9,6 +9,7 @@ python -m tkinter  # ✅ should work
 # Install dependencies
 pip install sounddevice pynput numpy scipy openai-whisper
 pip install torch
+pip install tkhtmlview markdown
 
 # Install soundfile
 pip install soundfile

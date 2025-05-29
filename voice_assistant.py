@@ -221,22 +221,28 @@ class VoiceApp:
 
     def update_llama_response(self, buffer):
         import re
-        # Remove only the last LLaMA response block, keep previous conversation
-        html_buffer = self.html_buffer
-        # Remove only the last <div id='llama-response'>...</div> at the end
-        html_buffer = re.sub(r"(<div id='llama-response'>.*?</div>)(?![\s\S]*<div id='llama-response'>)", "", html_buffer, flags=re.DOTALL)
+        # Remove only the last LLaMA response block at the end, keep previous conversation
+        html_buffer = self.html_buffer  # Use the persistent buffer, not get_html()
+        html_buffer = re.sub(r"(<div id='llama-response'>.*?</div>)$", "", html_buffer, flags=re.DOTALL)
         html = f"<div id='llama-response'>{markdown.markdown(buffer, extensions=['fenced_code', 'codehilite'])}</div>"
+        # Check if user is at the bottom before updating
+        last_visible = self.text_area.yview()[1]
+        at_bottom = last_visible >= 0.999
         self.text_area.set_html(html_buffer + html)
-        self.text_area.see("end")
+        if at_bottom:
+            self.text_area.see("end")
 
     def finalize_llama_response(self, buffer):
         import re
-        # Remove only the last <div id='llama-response'>...</div> at the end
-        self.html_buffer = re.sub(r"(<div id='llama-response'>.*?</div>)(?![\s\S]*<div id='llama-response'>)", "", self.html_buffer, flags=re.DOTALL)
+        self.html_buffer = re.sub(r"(<div id='llama-response'>.*?</div>)$", "", self.html_buffer, flags=re.DOTALL)
         html = f"<div id='llama-response'>{markdown.markdown(buffer, extensions=['fenced_code', 'codehilite'])}</div>"
         self.html_buffer += html + "<br><br>"
+        # Check if user is at the bottom before updating
+        last_visible = self.text_area.yview()[1]
+        at_bottom = last_visible >= 0.999
         self.text_area.set_html(self.html_buffer)
-        self.text_area.see("end")
+        if at_bottom:
+            self.text_area.see("end")
 
 def main():
     root = tk.Tk()

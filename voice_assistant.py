@@ -60,9 +60,21 @@ class VoiceApp:
         )
         self.stop_btn.grid(row=0, column=1, padx=10)
 
+        self.listen_speaker_btn = tk.Button(
+            button_frame,
+            text="🔊 Listen Speaker",
+            command=self.start_speaker_recording,
+            width=20,
+            bg="#FF9800",
+            fg="white",
+            font=self.custom_font
+        )
+        self.listen_speaker_btn.grid(row=0, column=2, padx=10)
+
         # Text area (Markdown/HTML rendering)
         self.text_area = HTMLScrolledText(root, width=70, height=20, font=("Courier", 20), html=True)
         self.text_area.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+        self.text_area.config(state="normal")  # Ensure selectable/copyable
         self.html_buffer = "<p><b>[INFO]</b> Ready to record...</p>"
         self.text_area.set_html(self.html_buffer)
 
@@ -98,6 +110,7 @@ class VoiceApp:
         self.frames = []
 
         self.play_btn.config(state=tk.DISABLED)
+        self.listen_speaker_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
         self.update_text_area("[INFO] Recording started...\n")
 
@@ -120,12 +133,48 @@ class VoiceApp:
             self.root.after(0, self.update_text_area, f"[ERROR] Audio recording failed: {e}\n")
             self.root.after(0, self.stop_recording)  # Reset buttons safely
 
+    def start_speaker_recording(self):
+        if self.recording:
+            return
+        self.recording = True
+        self.frames = []
+        self.play_btn.config(state=tk.DISABLED)
+        self.listen_speaker_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.NORMAL)
+        self.update_text_area("[INFO] Speaker recording started...\n")
+        threading.Thread(target=self.record_speaker_audio, daemon=True).start()
+
+    def record_speaker_audio(self):
+        try:
+            # Find BlackHole device index
+            devices = sd.query_devices()
+            blackhole_index = None
+            for idx, dev in enumerate(devices):
+                if 'blackhole' in dev['name'].lower() and dev['max_input_channels'] > 0:
+                    blackhole_index = idx
+                    break
+            if blackhole_index is None:
+                self.root.after(0, self.update_text_area, "[ERROR] BlackHole input device not found.\n")
+                self.root.after(0, self.stop_recording)
+                return
+            channels = min(devices[blackhole_index]['max_input_channels'], 2)
+            def callback(indata, frame_count, time_info, status):
+                if self.recording:
+                    self.frames.append(indata.copy())
+            with sd.InputStream(samplerate=SAMPLERATE, channels=channels, device=blackhole_index, callback=callback):
+                while self.recording:
+                    sd.sleep(100)
+        except Exception as e:
+            self.root.after(0, self.update_text_area, f"[ERROR] Speaker recording failed: {e}\n")
+            self.root.after(0, self.stop_recording)
+
     def stop_recording(self):
         if not self.recording:
             return
         self.recording = False
 
         self.play_btn.config(state=tk.NORMAL)
+        self.listen_speaker_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
         self.update_text_area("[INFO] Recording stopped.\n")
 
@@ -133,6 +182,9 @@ class VoiceApp:
 
     def process_audio(self):
         try:
+            if not self.frames:
+                self.root.after(0, self.update_text_area, "[ERROR] No audio data was recorded.\n")
+                return
             audio_np = np.concatenate(self.frames, axis=0)
 
             # Convert to mono

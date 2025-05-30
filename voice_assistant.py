@@ -12,6 +12,7 @@ import os
 import json
 from tkhtmlview import HTMLScrolledText
 import markdown
+import tkinter.ttk as ttk
 
 SAMPLERATE = 44100
 
@@ -24,6 +25,8 @@ class VoiceApp:
 
         self.recording = False
         self.frames = []
+        self.selected_device_index = None
+        self.input_devices = []
 
         # Set font
         self.custom_font = tkfont.Font(family="Helvetica", size=20)
@@ -32,6 +35,15 @@ class VoiceApp:
         # Title
         title_label = tk.Label(root, text="Voice Assistant", font=self.heading_font, fg="#333", pady=10)
         title_label.pack()
+
+        # Device selection
+        device_frame = tk.Frame(root)
+        device_frame.pack(pady=(0, 5))
+        tk.Label(device_frame, text="Input Device:", font=("Helvetica", 12)).pack(side=tk.LEFT)
+        self.device_combo = ttk.Combobox(device_frame, state="readonly", width=50)
+        self.device_combo.pack(side=tk.LEFT, padx=5)
+        self.device_combo.bind("<<ComboboxSelected>>", self.on_device_selected)
+        self.populate_devices()
 
         # Button frame (horizontal layout)
         button_frame = tk.Frame(root)
@@ -118,20 +130,22 @@ class VoiceApp:
 
     def record_audio(self):
         try:
-            device_info = sd.query_devices(kind='input')
+            device_index = self.selected_device_index
+            if device_index is None:
+                self.root.after(0, self.update_text_area, f"[ERROR] No input device selected.\n")
+                self.root.after(0, self.stop_recording)
+                return
+            device_info = sd.query_devices(device_index)
             channels = min(device_info['max_input_channels'], 2)
-
             def callback(indata, frame_count, time_info, status):
                 if self.recording:
                     self.frames.append(indata.copy())
-
-            with sd.InputStream(samplerate=SAMPLERATE, channels=channels, callback=callback):
+            with sd.InputStream(samplerate=SAMPLERATE, channels=channels, device=device_index, callback=callback):
                 while self.recording:
                     sd.sleep(100)
-
         except Exception as e:
             self.root.after(0, self.update_text_area, f"[ERROR] Audio recording failed: {e}\n")
-            self.root.after(0, self.stop_recording)  # Reset buttons safely
+            self.root.after(0, self.stop_recording)
 
     def start_speaker_recording(self):
         if self.recording:
@@ -146,22 +160,19 @@ class VoiceApp:
 
     def record_speaker_audio(self):
         try:
-            # Find BlackHole device index
-            devices = sd.query_devices()
-            blackhole_index = None
-            for idx, dev in enumerate(devices):
-                if 'blackhole' in dev['name'].lower() and dev['max_input_channels'] > 0:
-                    blackhole_index = idx
-                    break
-            if blackhole_index is None:
-                self.root.after(0, self.update_text_area, "[ERROR] BlackHole input device not found.\n")
+            device_index = self.selected_device_index
+            if device_index is None:
+                self.root.after(0, self.update_text_area, f"[ERROR] No input device selected.\n")
                 self.root.after(0, self.stop_recording)
                 return
-            channels = min(devices[blackhole_index]['max_input_channels'], 2)
+            devices = sd.query_devices()
+            dev = devices[device_index]
+            # Remove BlackHole-only restriction: allow any device
+            channels = min(dev['max_input_channels'], 2)
             def callback(indata, frame_count, time_info, status):
                 if self.recording:
                     self.frames.append(indata.copy())
-            with sd.InputStream(samplerate=SAMPLERATE, channels=channels, device=blackhole_index, callback=callback):
+            with sd.InputStream(samplerate=SAMPLERATE, channels=channels, device=device_index, callback=callback):
                 while self.recording:
                     sd.sleep(100)
         except Exception as e:
@@ -295,6 +306,34 @@ class VoiceApp:
         self.text_area.set_html(self.html_buffer)
         if at_bottom:
             self.text_area.see("end")
+
+    def populate_devices(self):
+        devices = sd.query_devices()
+        self.input_devices = [
+            (idx, dev['name']) for idx, dev in enumerate(devices) if dev['max_input_channels'] > 0
+        ]
+        device_names = [f"{name} (index {idx})" for idx, name in self.input_devices]
+        self.device_combo['values'] = device_names
+        # Try to select default input device
+        default_idx = sd.default.device[0] if sd.default.device else None
+        if default_idx is not None:
+            for i, (idx, name) in enumerate(self.input_devices):
+                if idx == default_idx:
+                    self.device_combo.current(i)
+                    self.selected_device_index = idx
+                    break
+            else:
+                self.device_combo.current(0)
+                self.selected_device_index = self.input_devices[0][0]
+        elif self.input_devices:
+            self.device_combo.current(0)
+            self.selected_device_index = self.input_devices[0][0]
+
+    def on_device_selected(self, event=None):
+        sel = self.device_combo.current()
+        if sel >= 0 and sel < len(self.input_devices):
+            self.selected_device_index = self.input_devices[sel][0]
+            self.update_text_area(f"[INFO] Selected input device: {self.input_devices[sel][1]}\n")
 
 def main():
     root = tk.Tk()
